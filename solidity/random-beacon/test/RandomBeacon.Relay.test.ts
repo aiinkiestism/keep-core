@@ -455,7 +455,10 @@ describe("RandomBeacon - Relay", () => {
           })
 
           it("should terminate the group", async () => {
-            // TODO: Implementation once `Groups` library is ready.
+            const isGroupTeminated = await (
+              randomBeacon as RandomBeaconStub
+            ).isGroupTerminated(0)
+            expect(isGroupTeminated).to.be.equal(true)
           })
 
           it("should emit RelayEntryTimedOut event", async () => {
@@ -466,11 +469,11 @@ describe("RandomBeacon - Relay", () => {
 
           it("should retry current relay request", async () => {
             // We expect the same request ID because this is a retry.
-            // Group ID is still `0` because there is only one group
-            // after termination was performed.
+            // Group ID is `1` because we take an active group from `groupsRegistry`
+            // array. Group with an index `0` was terminated.
             await expect(tx)
               .to.emit(randomBeacon, "RelayEntryRequested")
-              .withArgs(1, 0, blsData.previousEntry)
+              .withArgs(1, 1, blsData.previousEntry)
 
             expect(await randomBeacon.isRelayRequestInProgress()).to.be.true
           })
@@ -495,7 +498,10 @@ describe("RandomBeacon - Relay", () => {
         })
 
         it("should terminate the group", async () => {
-          // TODO: Implementation once `Groups` library is ready.
+          const isGroupTeminated = await (
+            randomBeacon as RandomBeaconStub
+          ).isGroupTerminated(0)
+          expect(isGroupTeminated).to.be.equal(true)
         })
 
         it("should emit RelayEntryTimedOut event", async () => {
@@ -505,9 +511,8 @@ describe("RandomBeacon - Relay", () => {
         })
 
         it("should clean up current relay request data", async () => {
-          // TODO: Uncomment those assertions once termination is implemented.
-          // await expect(tx).to.not.emit(randomBeacon, "RelayEntryRequested")
-          // expect(await randomBeacon.isRelayRequestInProgress()).to.be.false
+          await expect(tx).to.not.emit(randomBeacon, "RelayEntryRequested")
+          expect(await randomBeacon.isRelayRequestInProgress()).to.be.false
         })
       })
     })
