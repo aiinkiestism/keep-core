@@ -55,6 +55,13 @@ interface ISortitionPool {
 ///       staking interface from there.
 interface IRandomBeaconStaking {
     function slash(uint256 amount, address[] memory operators) external;
+
+    function seize(
+        uint96 amount,
+        uint256 rewardMultipier,
+        address notifier,
+        address[] memory operators
+    ) external;
 }
 
 /// @title Keep Random Beacon
@@ -107,6 +114,11 @@ contract RandomBeacon is Ownable {
     ///         signed the malicious result is slashed for
     ///         `maliciousDkgResultSlashingAmount`.
     uint256 public maliciousDkgResultSlashingAmount;
+
+    /// @notice This amount is required to protect against griefing the staking
+    ///         contract and individual applications are allowed to require higher
+    ///         minimum stakes if necessary.
+    uint96 public minimumStake;
 
     ISortitionPool public sortitionPool;
     IRandomBeaconStaking public staking;
@@ -561,6 +573,41 @@ contract RandomBeacon is Ownable {
         } else {
             relay.cleanupOnEntryTimeout();
         }
+    }
+
+    /// @notice Reports unauthorized groups signing. Must provide a valid signature
+    ///         of the group address as a message. Successful signature
+    ///         verification means the private key has been leaked and all group
+    ///         members should be punished by slashing their tokens. Group has
+    ///         to be active or expired. Unauthorized signing cannot be reported
+    ///         for stale or terminated group. In case of reporting unauthorized
+    ///         signing for stale group, terminated group, or when the signature
+    ///         is inavlid, function reverts.
+    /// @param signedMsgSender Signature of the group address as a message.
+    function reportUnauthorizedSigning(bytes memory signedMsgSender) external {
+        uint64 groupId = relay.currentRequest.groupId;
+
+        require(!groups.isStaleGroup(groupId), "Group cannot be stale");
+        require(
+            !groups.isGroupTerminated(groupId),
+            "Group cannot be terminated"
+        );
+
+        require(
+            BLS.verifyBytes(
+                groups.getGroup(groupId).groupPubKey,
+                abi.encodePacked(msg.sender),
+                signedMsgSender
+            ),
+            "Invalid signature"
+        );
+
+        groups.terminateGroup(groupId);
+
+        address[] memory groupMembers = sortitionPool.getIDOperators(
+            groups.getGroup(groupId).members
+        );
+        staking.seize(minimumStake, 100, msg.sender, groupMembers);
     }
 
     /// @return Flag indicating whether a relay entry request is currently

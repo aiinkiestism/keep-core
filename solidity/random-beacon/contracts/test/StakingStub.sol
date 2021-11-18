@@ -9,6 +9,12 @@ contract StakingStub is IRandomBeaconStaking {
     mapping(address => uint256) public stakedTokens;
 
     event Slashed(uint256 amount, address[] operators);
+    event Seized(
+        uint96 amount,
+        uint256 rewardMultipier,
+        address notifier,
+        address[] operators
+    );
 
     function slash(uint256 amount, address[] memory operators)
         external
@@ -16,6 +22,17 @@ contract StakingStub is IRandomBeaconStaking {
     {
         if (amount > 0 && operators.length > 0) {
             emit Slashed(amount, operators);
+        }
+    }
+
+    function seize(
+        uint96 amount,
+        uint256 rewardMultipier,
+        address notifier,
+        address[] memory operators
+    ) external override {
+        if (amount > 0 && operators.length > 0) {
+            emit Seized(amount, rewardMultipier, notifier, operators);
         }
     }
 

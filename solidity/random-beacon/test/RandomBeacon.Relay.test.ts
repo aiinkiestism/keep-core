@@ -7,7 +7,7 @@ import type { SignerWithAddress } from "@nomiclabs/hardhat-ethers/signers"
 import type { Address } from "hardhat-deploy/types"
 import blsData from "./data/bls"
 import { to1e18 } from "./functions"
-import { constants, randomBeaconDeployment } from "./fixtures"
+import { constants, randomBeaconDeployment, blsDeployment } from "./fixtures"
 import { createGroup } from "./utils/groups"
 import type {
   RandomBeacon,
@@ -16,11 +16,12 @@ import type {
   RelayStub,
   SortitionPoolStub,
   StakingStub,
+  BLS,
 } from "../typechain"
 import { registerOperators, Operator, OperatorID } from "./utils/sortitionpool"
 
 const { time } = helpers
-const { mineBlocks } = time
+const { mineBlocks, mineBlocksTo } = time
 const ZERO_ADDRESS = ethers.constants.AddressZero
 
 const fixture = async () => {
@@ -33,6 +34,8 @@ const fixture = async () => {
     (await getUnnamedAccounts()).slice(0, constants.groupSize)
   )
 
+  const bls = await blsDeployment()
+
   return {
     randomBeacon: deployment.randomBeacon as RandomBeacon,
     sortitionPool: deployment.sortitionPool as SortitionPoolStub,
@@ -42,6 +45,7 @@ const fixture = async () => {
       await ethers.getContractFactory("RelayStub")
     ).deploy()) as RelayStub,
     signers,
+    bls: bls.bls as BLS,
   }
 }
 
@@ -65,6 +69,8 @@ describe("RandomBeacon - Relay", () => {
   let signers: Operator[]
   let signersIDs: OperatorID[]
   let signersAddresses: Address[]
+  let tattletale: SignerWithAddress
+  let bls: BLS
 
   let randomBeacon: RandomBeacon
   let sortitionPool: SortitionPoolStub
@@ -78,8 +84,15 @@ describe("RandomBeacon - Relay", () => {
 
   beforeEach("load test fixture", async () => {
     // eslint-disable-next-line @typescript-eslint/no-extra-semi
-    ;({ randomBeacon, sortitionPool, testToken, staking, relayStub, signers } =
-      await waffle.loadFixture(fixture))
+    ;({
+      randomBeacon,
+      sortitionPool,
+      testToken,
+      staking,
+      relayStub,
+      signers,
+      bls,
+    } = await waffle.loadFixture(fixture))
 
     signersIDs = signers.map((signer) => signer.id)
     signersAddresses = signers.map((signer) => signer.address)
@@ -96,6 +109,8 @@ describe("RandomBeacon - Relay", () => {
     member18 = await ethers.getSigner(
       signers[firstEligibleMemberIndex + 2 - 1].address
     )
+
+    tattletale = await ethers.getSigner((await getUnnamedAccounts())[65])
 
     await randomBeacon.updateRelayEntryParameters(to1e18(100), 10, 5760, 0)
     // groupLifetime: 64 * 10 * 5760 + 100
@@ -522,6 +537,94 @@ describe("RandomBeacon - Relay", () => {
         await expect(randomBeacon.reportRelayEntryTimeout()).to.be.revertedWith(
           "Relay request did not time out"
         )
+      })
+    })
+  })
+
+  describe("reportUnauthorizedSigning", () => {
+    beforeEach(async () => {
+      await createGroup(randomBeacon as RandomBeaconStub, signers)
+
+      await (randomBeacon as RandomBeaconStub).setMinimumStake(to1e18(1))
+
+      await approveTestToken()
+      await randomBeacon.connect(requester).requestRelayEntry(ZERO_ADDRESS)
+    })
+    context("when a group is active", () => {
+      context("when provided signature is valid", () => {
+        let tx
+        beforeEach(async () => {
+          const tattletaleSignature = await bls.sign(
+            tattletale.address,
+            blsData.secretKey
+          )
+          tx = await randomBeacon
+            .connect(tattletale)
+            .reportUnauthorizedSigning(tattletaleSignature)
+        })
+        it("should terminate the group", async () => {
+          const isGroupTeminated = await (
+            randomBeacon as RandomBeaconStub
+          ).isGroupTerminated(0)
+          expect(isGroupTeminated).to.be.equal(true)
+        })
+        it("should call staking contract to seize the min stake", async () => {
+          await expect(tx)
+            .to.emit(staking, "Seized")
+            .withArgs(to1e18(1), 100, tattletale.address, signersAddresses)
+        })
+      })
+    })
+
+    context("when a group is stale", () => {
+      it("should revert", async () => {
+        const registry = await randomBeacon.getGroupsRegistry()
+
+        const groupStaleTime = await (
+          randomBeacon as RandomBeaconStub
+        ).groupStaleTime(registry[0])
+        await mineBlocksTo(groupStaleTime.toNumber() + 1)
+
+        const tattletaleSignature = await bls.sign(
+          tattletale.address,
+          blsData.secretKey
+        )
+        await expect(
+          randomBeacon
+            .connect(tattletale)
+            .reportUnauthorizedSigning(tattletaleSignature)
+        ).to.be.revertedWith("Group cannot be stale")
+      })
+    })
+
+    context("when group is terminated", () => {
+      it("should revert", async () => {
+        // `groupSize * relayEntrySubmissionEligibilityDelay +
+        // relayEntryHardTimeout`.
+        await mineBlocks(64 * 10 + 5760)
+        await randomBeacon.reportRelayEntryTimeout()
+
+        const tattletaleSignature = await bls.sign(
+          tattletale.address,
+          blsData.secretKey
+        )
+        await expect(
+          randomBeacon
+            .connect(tattletale)
+            .reportUnauthorizedSigning(tattletaleSignature)
+        ).to.be.revertedWith("Group cannot be terminated")
+      })
+    })
+
+    context("when provided signature is not valid", () => {
+      it("should revert", async () => {
+        // the valid key is 123 instead of 42
+        const tattletaleSignature = await bls.sign(tattletale.address, 42)
+        await expect(
+          randomBeacon
+            .connect(tattletale)
+            .reportUnauthorizedSigning(tattletaleSignature)
+        ).to.be.revertedWith("Invalid signature")
       })
     })
   })

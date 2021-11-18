@@ -48,4 +48,19 @@ contract RandomBeaconStub is RandomBeacon {
 
         return group.terminated;
     }
+
+    function setMinimumStake(uint96 minStake) external {
+        minimumStake = minStake;
+    }
+
+    function groupStaleTime(bytes32 groupPubKeyHash)
+        external
+        view
+        returns (uint256)
+    {
+        return
+            groups.groupsData[groupPubKeyHash].activationBlockNumber +
+            groups.groupLifetime +
+            groups.relayEntryTimeout;
+    }
 }
